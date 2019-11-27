@@ -18,7 +18,6 @@ import scipy.special as scsp
 import statsmodels.api as sm
 import math
 import copy
-
 from lib.grad import *
 
 
@@ -58,26 +57,27 @@ def plot_summarize_data(df):
     
     pass
 
+
 def Sigmoid(x):
     return np.exp(x)/(1+np.exp(x))
 
 def ReverseSigmoid(x,k):
     return np.log(x/(k-x))
 
+def BetaDist(mu_t,c,s,vY_t_i):
+    return (c*scsp.gamma(s))/(scsp.gamma(s*mu_t)*scsp.gamma(s*(1-mu_t))) * np.power(vY_t_i,c*s*mu_t-1) * np.power((1-np.power(vY_t_i,c)),s*(1-mu_t)-1)
+
+def ParamTransform(vP):
+    return [vP[0],Sigmoid(vP[1]),Sigmoid(vP[2]),5*Sigmoid(vP[3]),5*Sigmoid(vP[4])]
+
 def LogLikelihood(mu_t,vP,N_t,vY_t):
     c = vP[3]
     s = vP[4]
+    ll=1
     
-    if N_t==0: 
-        return np.log(1)
-    
-    else: 
-        ll=0
-        for i in range(N_t):
-            ll+= np.log(c) + scsp.gammaln(s) - scsp.gammaln(s*mu_t) - scsp.gammaln(s*(1-mu_t)) 
-            + (c*s*mu_t - 1)*np.log(vY_t[i]) + (s*(1-mu_t)-1)*np.log(1-np.power(vY_t[i],c))
-        
-        return ll
+    for i in range(N_t):
+        ll = ll * BetaDist(mu_t,c,s,vY_t[i])
+    return np.log(ll)
     
 def Derivative(mu_t,vP,N_t,vY_t):
     c = vP[3]
@@ -90,7 +90,27 @@ def Derivative(mu_t,vP,N_t,vY_t):
     return deriv
 
 
+def StdErrors(fun,params):
+    
+    #hessian
+    hes = -hessian_2sided(fun,params)
+    mHI = np.linalg.inv(hes)
+    
+    #std. errors
+    std_errors = list(np.sqrt(np.diag(-mHI)))
+    
+    #sandwich form robust std. errors
+    mHI = (mHI + mHI.T)/2
+    mG = jacobian_2sided(fun,params)
+    cov_matrix_sandwich = mHI @ (mG.T @ mG) @ mHI
+    std_errors_sandwich = list(np.sqrt(np.diag(cov_matrix_sandwich))) 
+    
+    return std_errors_sandwich
+
 def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN):
+    
+    #transform vP
+    vP = ParamTransform(vP) 
     
     #length of data
     iN = len(vY)
@@ -102,7 +122,6 @@ def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN):
     
     #initialize log-likelihoods
     vLL = np.zeros((iN,))
-    
     #parameters
     omega = vP[0]
     beta = vP[1]
@@ -116,17 +135,20 @@ def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN):
         score = 0
         
         if N_t>0:
-            score =  1/N_t * Derivative(Sigmoid(f_t[i]),vP,N_t,vY_t) *  np.exp(f_t[i])/(np.power(1+np.exp(f_t[i]),2))
-                        
+            score =  (1/N_t) * Derivative(Sigmoid(f_t[i]),vP,N_t,vY_t) *  np.exp(f_t[i])/(np.power((1+np.exp(f_t[i])),2))
+ 
+            
         f_t[i+1] = omega + beta*f_t[i] + alpha * score 
         vLL[i+1] = LogLikelihood(Sigmoid(f_t[i+1]),vP,vN[i+1],vY.loc[i+1])
-        
+
     return vLL
 
 def EstimateParams(df):
         
     #initial params for w,beta,alpha,c,s
-    vP0 = [0.001,0.86,0.26,3,0.84]
+    vP0_t = [0.01, 0.99, 0.01, 3, 0.99]
+    
+    vP0 = [vP0_t[0],ReverseSigmoid(vP0_t[1],1),ReverseSigmoid(vP0_t[2],1),ReverseSigmoid(vP0_t[3],5),ReverseSigmoid(vP0_t[4],5)]
     
     vY = df.iloc[:,2:11]
 
@@ -134,7 +156,14 @@ def EstimateParams(df):
     vN = df['N']
     
     sumLL= lambda vP: -np.sum(LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN))  
-    res= opt.minimize(sumLL, vP0, method="BFGS",options={'disp': True, 'maxiter':50})
+    
+    
+    res= opt.minimize(sumLL, vP0, method='BFGS', options={'disp': True})
+    params = ParamTransform(res.x)
+    
+    print('Optimized parameters:\nomega: ',params[0],'\nbeta: ',params[1],'\nalpha: ',params[2],'\nc: ',params[3],'\ns: ',params[4])
+    
+    
     return res
 
 def main():
@@ -147,9 +176,6 @@ def main():
     
     res = EstimateParams(df)
     
-
-    
-
 
 ### start main
 if __name__ == "__main__":
