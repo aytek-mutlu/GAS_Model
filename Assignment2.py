@@ -72,7 +72,6 @@ def ReverseSigmoid(x,k):
     return np.log(x/(k-x))
 
 def LogBetaDist(mu_t,c,s,vY_t_i):
-    
     return np.log(c)+scsp.gammaln(s)-scsp.gammaln(s*mu_t)-scsp.gammaln(s*(1-mu_t))+np.log(np.power(vY_t_i,c*s*mu_t-1)) + np.log(np.power((1-np.power(vY_t_i,c)),s*(1-mu_t)-1))
 
 def ParamTransform(vP,bShapeAsVector=False):
@@ -144,7 +143,7 @@ def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN,return_f_t = False):
         f_t[i+1] = omega + beta*f_t[i] + alpha * score 
         
         #calculate loglikelihood
-        vLL[i+1] = -LogLikelihood(Sigmoid(f_t[i+1]),vP,vN[i+1],vY.loc[i+1])
+        vLL[i+1] = LogLikelihood(Sigmoid(f_t[i+1]),vP,vN[i+1],vY.loc[i+1])
     
     #return filter or loglikelihood array
     if return_f_t:
