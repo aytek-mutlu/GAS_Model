@@ -17,16 +17,7 @@ from lib.grad import *
 
 
 def read_clean_data(filename):
-    '''
-    Purpose:
-        Read and clean LGD dataset
-    
-    Inputs:
-        filename:   string, filename for LGD
-        
-    Return value:
-        df          dataframe, data
-    '''
+
     ## read data
     df  = pd.read_excel('data/'+filename+'.xlsx')
 
@@ -40,31 +31,23 @@ def read_clean_data(filename):
 
 
 def plot_summarize_data(df):
-    '''
-    Purpose:
-        Plot and summarize data
-    
-    Inputs:
-        df:                 dataframe, data
-        
-    Return value:
-        df_summary          dataframe, descriptives       
-    '''
+
     
     pass
 
 
 def PlotDist(f_t,c,s,df):
-    
+
     #num. of observations
     iN = len(f_t)
     
     #mu_t
     mu_t = Sigmoid(f_t)
     
+    #initialize mean estimation array
     mean_t = np.zeros((iN,))
     
-    #calculate mean over time
+    #estimate mean over time
     for i in range(iN):
         mean_t[i] = scsp.gamma(s)/scsp.gamma(s*mu_t[i]) * scsp.gamma(s*mu_t[i]+1/c)/scsp.gamma(s+1/c)
     
@@ -81,16 +64,18 @@ def PlotDist(f_t,c,s,df):
 
  
 def Sigmoid(x):
+
     return np.exp(x)/(1+np.exp(x))
 
 def ReverseSigmoid(x,k):
+
     return np.log(x/(k-x))
 
 def LogBetaDist(mu_t,c,s,vY_t_i):
+    
     return np.log(c)+scsp.gammaln(s)-scsp.gammaln(s*mu_t)-scsp.gammaln(s*(1-mu_t))+np.log(np.power(vY_t_i,c*s*mu_t-1)) + np.log(np.power((1-np.power(vY_t_i,c)),s*(1-mu_t)-1))
 
 def ParamTransform(vP,bShapeAsVector=False):
-    
     vP_transformed = [vP[0],Sigmoid(vP[1]),Sigmoid(vP[2]),5*Sigmoid(vP[3]),5*Sigmoid(vP[4])]
     if (bShapeAsVector == True):
         return np.array(vP_transformed)
@@ -98,19 +83,24 @@ def ParamTransform(vP,bShapeAsVector=False):
         return vP_transformed
 
 def LogLikelihood(mu_t,vP,N_t,vY_t):
+    
     c = vP[3]
     s = vP[4]
     ll=0
+    
+    #log-likelihood contribution of each observation at time t
     for i in range(N_t):
         ll = ll + LogBetaDist(mu_t,c,s,vY_t[i])
 
     return ll
 
 def Derivative(mu_t,vP,N_t,vY_t):
+    
     c = vP[3]
     s = vP[4]
     deriv = 0
     
+    #derivative contribution of each observation at time t
     for i in range(N_t):
         deriv += -s*scsp.digamma(s*mu_t) + s*scsp.digamma(s*(1-mu_t)) + c*s*np.log(vY_t[i]) -s*np.log(1-np.power(vY_t[i],c))
 
@@ -120,7 +110,7 @@ def Derivative(mu_t,vP,N_t,vY_t):
 
 def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN,return_f_t = False):
     
-    #transform vP
+    #transform parameters
     vP = ParamTransform(vP) 
     
     #length of data
@@ -133,6 +123,7 @@ def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN,return_f_t = False):
     
     #initialize log-likelihoods
     vLL = np.zeros((iN,))
+    
     #parameters
     omega = vP[0]
     beta = vP[1]
@@ -145,13 +136,17 @@ def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN,return_f_t = False):
         vY_t = vY.loc[i]
         score = 0
         
+        #calculate score
         if N_t>0:
             score =  (1/N_t) * Derivative(Sigmoid(f_t[i]),vP,N_t,vY_t) *  np.exp(f_t[i])/(np.power((1+np.exp(f_t[i])),2))
  
-            
+        #update filter
         f_t[i+1] = omega + beta*f_t[i] + alpha * score 
-        vLL[i+1] = LogLikelihood(Sigmoid(f_t[i+1]),vP,vN[i+1],vY.loc[i+1])
+        
+        #calculate loglikelihood
+        vLL[i+1] = -LogLikelihood(Sigmoid(f_t[i+1]),vP,vN[i+1],vY.loc[i+1])
     
+    #return filter or loglikelihood array
     if return_f_t:
         return f_t
     else:
@@ -160,7 +155,6 @@ def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN,return_f_t = False):
 
 def StdErrors(fun,params,vY,mean_overall,vN,transform):
      
-    
     #hessian and std. errors
     hes = -hessian_2sided(fun,params)
     inv_hes = np.linalg.inv(hes)
@@ -172,6 +166,7 @@ def StdErrors(fun,params,vY,mean_overall,vN,transform):
     
     cov_matrix_sandwich = inv_hes_symetric @ (mG.T @ mG) @ inv_hes_symetric
     
+    #calculate transformed cov_matrix in case there is reparametrization
     if transform:
         mJ = jacobian_2sided(ParamTransform, params,True)
         cov_matrix_sandwich = mJ @ cov_matrix_sandwich @ mJ.T
@@ -186,24 +181,36 @@ def EstimateParams(df):
     #initial params for w,beta,alpha,c,s
     vP0_t = [0.01, 0.99, 0.01, 3, 0.99]
     
+    #re-transform initial parameters for optimization initialization
     vP0 = [vP0_t[0],ReverseSigmoid(vP0_t[1],1),ReverseSigmoid(vP0_t[2],1),ReverseSigmoid(vP0_t[3],5),ReverseSigmoid(vP0_t[4],5)]
     
+    #data extraction
     vY = df.iloc[:,2:11]
 
+    #overall sample mean for f_1 initialization
     mean_overall = vY.sum().sum() / vY.count().sum()
+    
+    #array of N_t's
     vN = df['N']
     
+    #function to be optimized
     sumLL= lambda vP: -np.sum(LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN))  
-    
     
     res= opt.minimize(sumLL, vP0, method='BFGS', options={'disp': True, 'maxiter':250})
     
+    #transformed parameters
     params = ParamTransform(res.x)
+    
+    #untransformed parameters
     params_untransformed = res.x    
     
+    #untransformed standard errors (original)
     std_errors_untransformed = StdErrors(sumLL,params_untransformed,vY,mean_overall,vN,transform = False)
+    
+    #transformed standard errors (reparametrized) 
     std_errors_transformed = StdErrors(sumLL,params_untransformed,vY,mean_overall,vN,transform = True)
     
+    #filters
     f_t_optimized = LL_PredictionErrorDecomposition(params_untransformed,vY,mean_overall,vN,True)
     
     return [res.fun,params,list(params_untransformed),std_errors_transformed,std_errors_untransformed,f_t_optimized]
