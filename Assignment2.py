@@ -86,8 +86,8 @@ def Sigmoid(x):
 def ReverseSigmoid(x,k):
     return np.log(x/(k-x))
 
-def BetaDist(mu_t,c,s,vY_t_i):
-    return (c*scsp.gamma(s))/(scsp.gamma(s*mu_t)*scsp.gamma(s*(1-mu_t))) * np.power(vY_t_i,c*s*mu_t-1) * np.power((1-np.power(vY_t_i,c)),s*(1-mu_t)-1)
+def LogBetaDist(mu_t,c,s,vY_t_i):
+    return np.log(c)+scsp.gammaln(s)-scsp.gammaln(s*mu_t)-scsp.gammaln(s*(1-mu_t))+np.log(np.power(vY_t_i,c*s*mu_t-1)) + np.log(np.power((1-np.power(vY_t_i,c)),s*(1-mu_t)-1))
 
 def ParamTransform(vP,bShapeAsVector=False):
     
@@ -100,12 +100,11 @@ def ParamTransform(vP,bShapeAsVector=False):
 def LogLikelihood(mu_t,vP,N_t,vY_t):
     c = vP[3]
     s = vP[4]
-    ll=1
+    ll=0
     for i in range(N_t):
-        ll = ll * BetaDist(mu_t,c,s,vY_t[i])
-        
-    return np.log(ll)
+        ll = ll + LogBetaDist(mu_t,c,s,vY_t[i])
 
+    return ll
 
 def Derivative(mu_t,vP,N_t,vY_t):
     c = vP[3]
