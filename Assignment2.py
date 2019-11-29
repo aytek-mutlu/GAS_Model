@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 import scipy.optimize as opt
 import scipy.special as scsp
-
+from scipy.stats import describe,chi2
 from lib.grad import *
 
 
@@ -24,6 +24,10 @@ def read_clean_data(filename):
     ## calculate no. of obs.
     df['N'] = df.iloc[:,2:11].notna().sum(axis=1)
     
+    df['date'] = [pd.datetime(year=y,month=m,day=1) for y,m in zip(df.Year,df.Month)]
+    
+    df['mean'] = df.iloc[:,2:11].mean(axis=1)
+    
     ## trim below 1% and above 99%
     df.iloc[:,2:11] = np.where(df.iloc[:,2:11]<0.01,0.01,np.where(df.iloc[:,2:11]>0.99,0.99,df.iloc[:,2:11]))
 
@@ -31,9 +35,26 @@ def read_clean_data(filename):
 
 
 def plot_summarize_data(df):
-
     
-    pass
+    #plot data
+    fig,ax= plt.subplots(figsize=(10,5))
+    ax.plot(df.date,df['mean'],'b',label='Mean LGD per observation month')
+    vals = ax.get_yticks()
+    ax.set_yticklabels(['{:,.0%}'.format(x) for x in vals])
+    
+    ##summarize data 
+    df_desc = describe(df['mean'].dropna())
+    df_summary = pd.DataFrame(columns=['Data'],index=['Mean','Std. Deviation','Min','Max','Skewness','Kurtosis','Total Number of Observations'])
+
+    df_summary.loc['Mean'] = df_desc[2]
+    df_summary.loc['Std. Deviation'] = np.sqrt(df_desc[3])
+    df_summary.loc['Min'] = df_desc[1][0]
+    df_summary.loc['Max'] = df_desc[1][1]
+    df_summary.loc['Skewness'] = df_desc[4]
+    df_summary.loc['Kurtosis'] = df_desc[5]
+    df_summary.loc['Total Number of Observations'] = df.N.sum()    
+
+    return df_summary
 
 
 def PlotDist(f_t,c,s,df):
@@ -52,7 +73,6 @@ def PlotDist(f_t,c,s,df):
         mean_t[i] = scsp.gamma(s)/scsp.gamma(s*mu_t[i]) * scsp.gamma(s*mu_t[i]+1/c)/scsp.gamma(s+1/c)
     
     #prepare data
-    df['date'] = [pd.datetime(year=y,month=m,day=1) for y,m in zip(df.Year,df.Month)]
     df_final = pd.concat([df.iloc[:,2:11],df['date']],axis=1)
     df_final = pd.melt(df_final,id_vars=['date'])
     
@@ -60,6 +80,8 @@ def PlotDist(f_t,c,s,df):
     fig,ax = plt.subplots()
     ax.plot(df.date,mean_t,'b')
     ax.plot(df_final['date'],df_final['value'],'r+')
+    vals = ax.get_yticks()
+    ax.set_yticklabels(['{:,.0%}'.format(x) for x in vals])
     ax.legend().set_visible(False)
 
  
@@ -73,6 +95,17 @@ def ReverseSigmoid(x,k):
 
 def LogBetaDist(mu_t,c,s,vY_t_i):
     return np.log(c)+scsp.gammaln(s)-scsp.gammaln(s*mu_t)-scsp.gammaln(s*(1-mu_t))+np.log(np.power(vY_t_i,c*s*mu_t-1)) + np.log(np.power((1-np.power(vY_t_i,c)),s*(1-mu_t)-1))
+
+
+def WaldTest(iY,params,cov_matrix):
+    
+    g = lambda params: params[3]-1
+    gJ = jacobian_2sided(g,params)[0]
+    test_stat = (iY*g(params)*(gJ@cov_matrix@gJ.T)*g(params))
+    p_val = 1 - chi2.cdf(test_stat, 1)
+    
+    return [test_stat,p_val]
+    
 
 def ParamTransform(vP,bShapeAsVector=False):
     vP_transformed = [vP[0],Sigmoid(vP[1]),Sigmoid(vP[2]),5*Sigmoid(vP[3]),5*Sigmoid(vP[4])]
@@ -104,7 +137,6 @@ def Derivative(mu_t,vP,N_t,vY_t):
         deriv += -s*scsp.digamma(s*mu_t) + s*scsp.digamma(s*(1-mu_t)) + c*s*np.log(vY_t[i]) -s*np.log(1-np.power(vY_t[i],c))
 
     return deriv
-
 
 
 def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN,return_f_t = False):
@@ -152,7 +184,7 @@ def LL_PredictionErrorDecomposition(vP,vY,mean_overall,vN,return_f_t = False):
         return vLL
 
 
-def StdErrors(fun,params,vY,mean_overall,vN,transform):
+def StdErrors(fun,params,vY,mean_overall,vN,transform,cov_matrix=False):
      
     #hessian and std. errors
     hes = -hessian_2sided(fun,params)
@@ -172,13 +204,13 @@ def StdErrors(fun,params,vY,mean_overall,vN,transform):
      
     std_errors_sandwich = list(np.sqrt(np.diag(cov_matrix_sandwich)))
     
-    return std_errors_sandwich
+    return [std_errors_sandwich,cov_matrix_sandwich]
 
 
 def EstimateParams(df):
         
     #initial params for w,beta,alpha,c,s
-    vP0_t = [0.01, 0.99, 0.01, 3, 0.99]
+    vP0_t = [0.01, 0.99, 0.01, 0.99, 0.99]
     
     #re-transform initial parameters for optimization initialization
     vP0 = [vP0_t[0],ReverseSigmoid(vP0_t[1],1),ReverseSigmoid(vP0_t[2],1),ReverseSigmoid(vP0_t[3],5),ReverseSigmoid(vP0_t[4],5)]
@@ -204,15 +236,18 @@ def EstimateParams(df):
     params_untransformed = res.x    
     
     #untransformed standard errors (original)
-    std_errors_untransformed = StdErrors(sumLL,params_untransformed,vY,mean_overall,vN,transform = False)
+    std_errors_untransformed = StdErrors(sumLL,params_untransformed,vY,mean_overall,vN,transform = False)[0]
     
     #transformed standard errors (reparametrized) 
-    std_errors_transformed = StdErrors(sumLL,params_untransformed,vY,mean_overall,vN,transform = True)
+    [std_errors_transformed,cov_matrix_transformed] = StdErrors(sumLL,params_untransformed,vY,mean_overall,vN,transform = True)
     
     #filters
     f_t_optimized = LL_PredictionErrorDecomposition(params_untransformed,vY,mean_overall,vN,True)
     
-    return [res.fun,params,list(params_untransformed),std_errors_transformed,std_errors_untransformed,f_t_optimized]
+    #Wald Test
+    [t_stat,p_value] = WaldTest(len(vY),np.array(params),cov_matrix_transformed)
+    
+    return [res.fun,params,list(params_untransformed),std_errors_transformed,std_errors_untransformed,f_t_optimized,t_stat,p_value]
 
 
 def main():
@@ -221,17 +256,24 @@ def main():
     
     df = read_clean_data(filename)
     
-    #print(plot_summarize_data(df))
+    print(plot_summarize_data(df))
     
-    [likelihood,params,params_original,std_err,std_err_original,f_t] = EstimateParams(df)
+    [likelihood,params,params_original,std_err,std_err_original,f_t,t_stat,p_value] = EstimateParams(df)
     print('Log-likelihood: ',-likelihood)
     print('Optimized reparametrized parameters:\nomega: ',params[0],'\nbeta: ',params[1],'\nalpha: ',params[2],'\nc: ',params[3],'\ns: ',params[4])
     print('Optimized original parameters:\nomega: ',params_original[0],'\nbeta: ',params_original[1],'\nalpha: ',params_original[2],'\nc: ',params_original[3],'\ns: ',params_original[4])
     print('Optimized reparametrized std. errors:\nomega: ',std_err[0],'\nbeta: ',std_err[1],'\nalpha: ',std_err[2],'\nc: ',std_err[3],'\ns: ',std_err[4])
     print('Optimized original std. errors:\nomega: ',std_err_original[0],'\nbeta: ',std_err_original[1],'\nalpha: ',std_err_original[2],'\nc: ',std_err_original[3],'\ns: ',std_err_original[4])
     
+    if p_value > 0.05:
+        print('Wald test null hypothesis cannot be rejected with test statistic of ',t_stat,' and p-value of ',p_value) 
+        print('Parameter c=',params[3],' is not significantly different from 1')
+    else:
+        print('Wald test null hypothesis is rejected with test statistic of ',t_stat,' and p-value of ',p_value) 
+        print('Parameter c=',params[3],' is significantly different from 1')
+        
     PlotDist(f_t,params[3],params[4],df)
-
+    
     
  
 ### start main
